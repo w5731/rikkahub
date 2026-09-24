@@ -19,8 +19,10 @@ import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.model.AuroraImageConfig
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.model.findMessageIndexForRemoteImageUrl
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -202,6 +204,34 @@ class ConversationRepository(
         return conversationDAO.existsById(uuid.toString())
     }
 
+    /** 含艾罗拉绘图占位符的会话 id（粗筛，供 AuroraLegacyMigration 一次性迁移定位）。 */
+    suspend fun getConversationIdsContainingAuroraPlaceholders(): List<String> =
+        messageNodeDAO.getConversationIdsContainingAuroraPlaceholders()
+
+    suspend fun updateAuroraPlaceholders(
+        conversationId: Uuid,
+        transform: suspend (UIMessage) -> UIMessage,
+    ): Int {
+        var updatedNodes = 0
+        val payloads = messageNodeDAO.getAuroraMessageNodePayloads(conversationId.toString())
+        payloads.forEach { payload ->
+            val messages = JsonInstant.decodeFromString<List<UIMessage>>(payload.messages)
+            val updated = messages.map { transform(it) }
+            if (updated != messages) {
+                val replacement = JsonInstant.encodeToString(updated)
+                updatedNodes += messageNodeDAO.compareAndSetMessages(
+                    nodeId = payload.id,
+                    expected = payload.messages,
+                    replacement = replacement,
+                )
+            }
+        }
+        if (updatedNodes > 0) {
+            getConversationById(conversationId)?.let { messageFtsManager.indexConversation(it) }
+        }
+        return updatedNodes
+    }
+
     suspend fun insertConversation(conversation: Conversation) {
         database.withTransaction {
             conversationDAO.insert(
@@ -242,6 +272,29 @@ class ConversationRepository(
     }
 
     suspend fun searchMessages(keyword: String) = messageFtsManager.search(keyword)
+
+    /**
+     * 在所有会话中查找包含给定远程图片 URL 的消息节点（解析规则与 [findMessageIndexForRemoteImageUrl] 一致，助理参数传 null 时使用原始文本）。
+     * 用于设置页等无当前会话上下文时的「定位到消息」。
+     *
+     * [auroraConfig] 用于把 `[[aurora_draw ...]]` 占位符换算成稳定 URL 参与匹配
+     * （助手上下文缺失时使用全局默认画师预设）。
+     */
+    suspend fun findConversationAndNodeForRemoteImageUrl(
+        sourceUrl: String,
+        auroraConfig: AuroraImageConfig? = null,
+    ): Pair<Uuid, Uuid>? {
+        for (idStr in conversationDAO.getAllIds()) {
+            val convId = runCatching { Uuid.parse(idStr) }.getOrNull() ?: continue
+            val conv = getConversationById(convId) ?: continue
+            val idx = conv.findMessageIndexForRemoteImageUrl(sourceUrl, assistant = null, auroraConfig = auroraConfig)
+            if (idx != null) {
+                val node = conv.messageNodes.getOrNull(idx) ?: continue
+                return conv.id to node.id
+            }
+        }
+        return null
+    }
 
     suspend fun rebuildAllIndexes(onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }) {
         messageFtsManager.deleteAll()

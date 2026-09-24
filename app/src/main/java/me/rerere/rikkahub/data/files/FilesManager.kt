@@ -440,6 +440,7 @@ class FilesManager(
 object FileFolders {
     const val UPLOAD = "upload"
     const val SKILLS = "skills"
+    const val MD_REMOTE_IMAGES = "md_remote_images"
 }
 
 suspend fun FilesManager.saveUploadFromUri(

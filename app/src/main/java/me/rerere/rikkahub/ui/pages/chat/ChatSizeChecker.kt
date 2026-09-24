@@ -35,8 +35,23 @@ private val DefaultSizeInfo = ConversationSizeInfo(
 )
 
 @Composable
-fun rememberConversationSizeInfo(conversation: Conversation): ConversationSizeInfo {
-    return remember(conversation.messageNodes) {
+fun rememberConversationSizeInfo(
+    conversation: Conversation,
+    loading: Boolean = false,
+): ConversationSizeInfo {
+    val completedBoundary = if (loading) {
+        conversation.messageNodes.getOrNull(conversation.messageNodes.lastIndex - 1)
+    } else {
+        conversation.messageNodes.lastOrNull()
+    }
+    val scanKey = listOf(
+        conversation.messageNodes.size,
+        loading,
+        completedBoundary?.id,
+        completedBoundary?.selectIndex,
+        completedBoundary?.currentMessage?.id,
+    )
+    return remember(scanKey) {
         val nodeCount = conversation.messageNodes.size
         val lastAssistantInputTokens = conversation.messageNodes.asReversed()
             .map { it.currentMessage }

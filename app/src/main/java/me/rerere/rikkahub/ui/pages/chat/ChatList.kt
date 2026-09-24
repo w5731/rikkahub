@@ -56,6 +56,7 @@ import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -96,6 +98,14 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.message.ChatMessage
+import me.rerere.rikkahub.ui.components.richtext.ChatImageNavigation
+import me.rerere.rikkahub.ui.components.richtext.LocalAuroraDrawPresetId
+import me.rerere.rikkahub.ui.components.richtext.LocalChatImageNavigation
+import me.rerere.rikkahub.ui.components.richtext.LocalMarkdownRemoteImageRequestSpecResolver
+import me.rerere.rikkahub.ui.components.richtext.LocalSessionMarkdownRemoteImageUrls
+import me.rerere.rikkahub.ui.components.richtext.auroraRequestSpecResolver
+import me.rerere.rikkahub.data.model.collectSessionRemoteHttpImageLocations
+import me.rerere.rikkahub.ui.components.richtext.LocalMarkdownRemoteImageAutoFetch
 import me.rerere.rikkahub.ui.components.ui.ErrorCardsDisplay
 import me.rerere.rikkahub.ui.components.ui.ListSelectableItem
 import me.rerere.rikkahub.ui.components.ui.RabbitLoadingIndicator
@@ -248,7 +258,7 @@ private fun ChatListNormal(
     ImeLazyListAutoScroller(lazyListState = state)
 
     // 对话大小警告对话框
-    val sizeInfo = rememberConversationSizeInfo(conversation)
+    val sizeInfo = rememberConversationSizeInfo(conversation, loading)
     var showSizeWarningDialog by rememberSaveable(conversation.id) { mutableStateOf(true) }
     if (sizeInfo.showWarning && showSizeWarningDialog) {
         ConversationSizeWarningDialog(
@@ -288,6 +298,61 @@ private fun ChatListNormal(
             }
         }
 
+        val sessionAssistant = settings.getAssistantById(conversation.assistantId)
+        val auroraImageConfig = settings.auroraImageConfig
+        val settledNodes = if (loading && conversation.messageNodes.isNotEmpty()) {
+            conversation.messageNodes.subList(0, conversation.messageNodes.lastIndex)
+        } else {
+            conversation.messageNodes
+        }
+        val streamingNode = if (loading) conversation.messageNodes.lastOrNull() else null
+        val settledScanKey: Any = if (loading) {
+            val boundary = settledNodes.lastOrNull()
+            listOf(settledNodes.size, boundary?.id, boundary?.selectIndex, boundary?.currentMessage?.id)
+        } else {
+            conversation.messageNodes
+        }
+        val settledImageLocations = remember(settledScanKey, sessionAssistant, auroraImageConfig) {
+            conversation.copy(messageNodes = settledNodes)
+                .collectSessionRemoteHttpImageLocations(sessionAssistant, auroraImageConfig)
+        }
+        val streamingImageLocations = remember(streamingNode, sessionAssistant, auroraImageConfig) {
+            if (streamingNode == null) {
+                emptyMap()
+            } else {
+                conversation.copy(messageNodes = listOf(streamingNode))
+                    .collectSessionRemoteHttpImageLocations(sessionAssistant, auroraImageConfig)
+                    .mapValues { (_, index) -> index + settledNodes.size }
+            }
+        }
+        val imageLocations = remember(settledImageLocations, streamingImageLocations) {
+            LinkedHashMap<String, Int>().apply {
+                putAll(settledImageLocations)
+                streamingImageLocations.forEach { (url, index) -> putIfAbsent(url, index) }
+            }
+        }
+        val sessionMarkdownRemoteImageUrls = remember(imageLocations) { imageLocations.keys.toList() }
+        val currentImageLocations by rememberUpdatedState(imageLocations)
+        val chatImageNavigation = remember(conversation.id, conversation.title) {
+            ChatImageNavigation(
+                conversationTitle = conversation.title,
+                messageIndexForRemoteUrl = { url -> currentImageLocations[url] },
+                locateRemoteImageUrl = { url ->
+                    currentImageLocations[url]?.let { idx ->
+                        scope.launch { state.scrollToItem(idx) }
+                    }
+                },
+            )
+        }
+        val auroraRequestSpec = remember(auroraImageConfig, sessionAssistant?.auroraDrawPresetId) {
+            auroraRequestSpecResolver(auroraImageConfig, sessionAssistant?.auroraDrawPresetId)
+        }
+        CompositionLocalProvider(
+            LocalSessionMarkdownRemoteImageUrls provides sessionMarkdownRemoteImageUrls,
+            LocalChatImageNavigation provides chatImageNavigation,
+            LocalMarkdownRemoteImageRequestSpecResolver provides auroraRequestSpec,
+            LocalAuroraDrawPresetId provides sessionAssistant?.auroraDrawPresetId,
+        ) {
         LazyColumn(
             state = state,
             contentPadding = PaddingValues(16.dp) + PaddingValues(bottom = 32.dp + innerPadding.calculateBottomPadding()),
@@ -302,55 +367,61 @@ private fun ChatListNormal(
                 items = conversation.messageNodes,
                 key = { index, item -> item.id },
             ) { index, node ->
-                Column {
-                    ListSelectableItem(
-                        key = node.id,
-                        onSelectChange = {
-                            if (!selectedItems.contains(node.id)) {
-                                selectedItems.add(node.id)
-                            } else {
-                                selectedItems.remove(node.id)
+                CompositionLocalProvider(
+                    LocalMarkdownRemoteImageAutoFetch provides (loading && index == conversation.messageNodes.lastIndex),
+                ) {
+                    key(node.id, node.selectIndex, node.messages.size) {
+                        Column {
+                            ListSelectableItem(
+                                key = node.id,
+                                onSelectChange = {
+                                    if (!selectedItems.contains(node.id)) {
+                                        selectedItems.add(node.id)
+                                    } else {
+                                        selectedItems.remove(node.id)
+                                    }
+                                },
+                                selectedKeys = selectedItems,
+                                enabled = selecting,
+                            ) {
+                                ChatMessage(
+                                    node = node,
+                                    model = node.currentMessage.modelId?.let { settings.findModelById(it) },
+                                    assistant = settings.getAssistantById(conversation.assistantId),
+                                    loading = loading && index == conversation.messageNodes.lastIndex,
+                                    onRegenerate = {
+                                        onRegenerate(node.currentMessage)
+                                    },
+                                    onEdit = {
+                                        onEdit(node.currentMessage)
+                                    },
+                                    onFork = {
+                                        onForkMessage(node.currentMessage)
+                                    },
+                                    onDelete = {
+                                        onDelete(node.currentMessage)
+                                    },
+                                    onShare = {
+                                        selecting = true  // 使用 CoroutineScope 延迟状态更新
+                                        selectedItems.clear()
+                                        selectedItems.addAll(conversation.messageNodes.map { it.id }
+                                            .subList(0, conversation.messageNodes.indexOf(node) + 1))
+                                    },
+                                    onUpdate = {
+                                        onUpdateMessage(it)
+                                    },
+                                    isFavorite = node.isFavorite,
+                                    onToggleFavorite = {
+                                        onToggleFavorite?.invoke(node)
+                                    },
+                                    onTranslate = onTranslate,
+                                    onClearTranslation = onClearTranslation,
+                                    onToolApproval = onToolApproval,
+                                    onToolAnswer = onToolAnswer,
+                                    lastMessage = index == conversation.messageNodes.lastIndex,
+                                )
                             }
-                        },
-                        selectedKeys = selectedItems,
-                        enabled = selecting,
-                    ) {
-                        ChatMessage(
-                            node = node,
-                            model = node.currentMessage.modelId?.let { settings.findModelById(it) },
-                            assistant = settings.getAssistantById(conversation.assistantId),
-                            loading = loading && index == conversation.messageNodes.lastIndex,
-                            onRegenerate = {
-                                onRegenerate(node.currentMessage)
-                            },
-                            onEdit = {
-                                onEdit(node.currentMessage)
-                            },
-                            onFork = {
-                                onForkMessage(node.currentMessage)
-                            },
-                            onDelete = {
-                                onDelete(node.currentMessage)
-                            },
-                            onShare = {
-                                selecting = true  // 使用 CoroutineScope 延迟状态更新
-                                selectedItems.clear()
-                                selectedItems.addAll(conversation.messageNodes.map { it.id }
-                                    .subList(0, conversation.messageNodes.indexOf(node) + 1))
-                            },
-                            onUpdate = {
-                                onUpdateMessage(it)
-                            },
-                            isFavorite = node.isFavorite,
-                            onToggleFavorite = {
-                                onToggleFavorite?.invoke(node)
-                            },
-                            onTranslate = onTranslate,
-                            onClearTranslation = onClearTranslation,
-                            onToolApproval = onToolApproval,
-                            onToolAnswer = onToolAnswer,
-                            lastMessage = index == conversation.messageNodes.lastIndex,
-                        )
+                        }
                     }
                 }
             }
@@ -386,6 +457,7 @@ private fun ChatListNormal(
                         .height(5.dp)
                 )
             }
+        }
         }
 
         Box(

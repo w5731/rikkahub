@@ -58,6 +58,11 @@ import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.files.SkillManager
+import coil3.imageLoader
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import me.rerere.rikkahub.data.ai.transformers.AuroraDrawPromptTransformer
+import me.rerere.rikkahub.data.ai.transformers.AuroraDrawSeedTransformer
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.OcrTransformer
@@ -72,12 +77,16 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
+import me.rerere.rikkahub.data.aurora.extractAuroraStableUrlMatches
+import me.rerere.rikkahub.data.aurora.resolveAuroraRequestUrl
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.MarkdownRemoteImageRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
@@ -90,6 +99,9 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 
 private const val TAG = "ChatService"
+
+/** 艾罗拉生图耗时可达数分钟（misskey 侧超时 180s），后台预取沿用同一上限。 */
+private const val AURORA_PREFETCH_TIMEOUT_MS = 180_000
 
 data class ChatError(
     val id: Uuid = Uuid.random(),
@@ -108,6 +120,7 @@ private val inputTransformers by lazy {
     listOf(
         TimeReminderTransformer,
         PromptInjectionTransformer,
+        AuroraDrawPromptTransformer,
         PlaceholderTransformer,
         DocumentAsPromptTransformer,
         OcrTransformer,
@@ -119,6 +132,7 @@ private val outputTransformers by lazy {
         ThinkTagTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
+        AuroraDrawSeedTransformer,
     )
 }
 
@@ -127,6 +141,7 @@ class ChatService(
     private val appScope: AppScope,
     private val settingsStore: SettingsStore,
     private val conversationRepo: ConversationRepository,
+    private val markdownRemoteImageRepository: MarkdownRemoteImageRepository,
     private val memoryRepository: MemoryRepository,
     private val generationHandler: GenerationHandler,
     private val templateTransformer: TemplateTransformer,
@@ -591,11 +606,64 @@ class ChatService(
             val finalConversation = getConversationFlow(conversationId).value
             saveConversation(conversationId, finalConversation)
 
+            prefetchAuroraImages(settings.getCurrentAssistant(), finalConversation)
+
             launchWithConversationReference(conversationId) {
                 generateTitle(conversationId, finalConversation)
             }
             launchWithConversationReference(conversationId) {
                 generateSuggestion(conversationId, finalConversation)
+            }
+        }
+    }
+
+    // ---- 艾罗拉图片后台预取 ----
+
+    /**
+     * 生成完成后在后台预取本会话中所有未落盘的艾罗拉图片（appScope，不依赖 UI 渲染）。
+     *
+     * 修复的问题：生图请求原本由渲染层触发，App 挂后台时 Compose 不组合，
+     * 「流式自动加载」不会执行，用户回来时图片停在「未生图」占位。
+     * 已落盘的图片直接跳过（fetchIfMissing），预取失败的保留占位，
+     * 仍可在全屏预览中手动刷新重新生成。
+     */
+    private fun prefetchAuroraImages(assistant: Assistant, conversation: Conversation) {
+        val config = settingsStore.settingsFlow.value.auroraImageConfig
+        if (!assistant.enableAuroraDraw || !config.isUsable()) return
+
+        val targets = LinkedHashMap<String, String>() // 稳定 URL（身份） -> 请求 URL
+        conversation.messageNodes.forEach { node ->
+            val message = node.currentMessage
+            if (message.role != MessageRole.ASSISTANT) return@forEach
+            message.parts.filterIsInstance<UIMessagePart.Text>().forEach { part ->
+                extractAuroraStableUrlMatches(part.text, config.baseUrl).forEach { (_, stableUrl) ->
+                    if (!targets.containsKey(stableUrl)) {
+                        resolveAuroraRequestUrl(stableUrl, config, assistant.auroraDrawPresetId)
+                            ?.let { targets[stableUrl] = it }
+                    }
+                }
+            }
+        }
+        if (targets.isEmpty()) return
+
+        appScope.launch(Dispatchers.IO) {
+            val imageLoader = context.imageLoader
+            val semaphore = Semaphore(2) // 生图耗时数十秒，限制并发保护服务端
+            coroutineScope {
+                targets.forEach { (stableUrl, requestUrl) ->
+                    launch {
+                        semaphore.withPermit {
+                            runCatching {
+                                markdownRemoteImageRepository.fetchIfMissing(
+                                    imageLoader = imageLoader,
+                                    sourceUrl = stableUrl,
+                                    requestUrl = requestUrl,
+                                    timeoutMs = AURORA_PREFETCH_TIMEOUT_MS,
+                                )
+                            }.onFailure { Log.w(TAG, "prefetchAuroraImages failed", it) }
+                        }
+                    }
+                }
             }
         }
     }

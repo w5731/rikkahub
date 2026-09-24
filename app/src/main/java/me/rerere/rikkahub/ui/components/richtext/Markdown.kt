@@ -72,6 +72,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Tick01
+import me.rerere.rikkahub.data.aurora.AuroraDrawSegment
+import me.rerere.rikkahub.data.aurora.splitAuroraDrawContent
 import me.rerere.rikkahub.ui.components.table.DataTable
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
@@ -102,38 +104,47 @@ val THINKING_REGEX = Regex("<think>([\\s\\S]*?)(?:</think>|$)", RegexOption.DOT_
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 private val BREAK_LINE_REGEX = Regex("(?i)<br\\s*/?>")
 
+private fun keepUserLineBreaks(text: String): String {
+    val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    return buildString {
+        lines.forEachIndexed { index, line ->
+            append(line)
+            if (index < lines.lastIndex) {
+                val next = lines[index + 1]
+                if (line.isNotBlank() && next.isNotBlank() && !line.endsWith("  ") && !line.endsWith("\\")) {
+                    append("  ")
+                }
+                append('\n')
+            }
+        }
+    }
+}
+
 // 预处理markdown内容
 private fun preProcess(content: String): String {
-    // 先找出所有代码块的位置
-    val codeBlocks = mutableListOf<IntRange>()
-    CODE_BLOCK_REGEX.findAll(content).forEach { match ->
-        codeBlocks.add(match.range)
-    }
-
-    // 检查位置是否在代码块内
-    fun isInCodeBlock(position: Int): Boolean {
-        return codeBlocks.any { range -> position in range }
-    }
-
-    // 替换行内公式 \( ... \) 到 $ ... $，但跳过代码块内的内容
-    var result = INLINE_LATEX_REGEX.replace(content) { matchResult ->
-        if (isInCodeBlock(matchResult.range.first)) {
-            matchResult.value // 保持原样
-        } else {
-            "$" + matchResult.groupValues[1] + "$"
+    return buildString {
+        var last = 0
+        CODE_BLOCK_REGEX.findAll(content).forEach { code ->
+            if (last < code.range.first) {
+                append(preProcessNonCode(content.substring(last, code.range.first)))
+            }
+            append(code.value)
+            last = code.range.last + 1
+        }
+        if (last < content.length) {
+            append(preProcessNonCode(content.substring(last)))
         }
     }
+}
 
-    // 替换块级公式 \[ ... \] 到 $$ ... $$，但跳过代码块内的内容
+private fun preProcessNonCode(text: String): String {
+    var result = INLINE_LATEX_REGEX.replace(text) { matchResult ->
+        "$" + matchResult.groupValues[1] + "$"
+    }
     result = BLOCK_LATEX_REGEX.replace(result) { matchResult ->
-        if (isInCodeBlock(matchResult.range.first)) {
-            matchResult.value // 保持原样
-        } else {
-            "$$" + matchResult.groupValues[1] + "$$"
-        }
+        "$$" + matchResult.groupValues[1] + "$$"
     }
-
-    return result
+    return keepUserLineBreaks(result)
 }
 
 @Preview(showBackground = true)
@@ -207,6 +218,34 @@ fun MarkdownBlock(
     style: TextStyle = LocalTextStyle.current,
     onClickCitation: (String) -> Unit = {}
 ) {
+    // 艾罗拉占位符切分：[[aurora_draw ...]] 换成图片卡片，文本段递归走原渲染管线
+    // （代码块内的占位符不切分；纯文本内容在 splitAuroraDrawContent 快速路径下零开销）
+    val auroraSegments = remember(content) { splitAuroraDrawContent(content) }
+    if (auroraSegments.size > 1 || auroraSegments.firstOrNull() is AuroraDrawSegment.Draw) {
+        Column(modifier = modifier) {
+            auroraSegments.forEach { segment ->
+                when (segment) {
+                    is AuroraDrawSegment.Text -> {
+                        if (segment.text.isNotBlank()) {
+                            MarkdownBlock(
+                                content = segment.text,
+                                style = style,
+                                onClickCitation = onClickCitation,
+                            )
+                        }
+                    }
+                    is AuroraDrawSegment.Draw -> {
+                        AuroraDrawImage(
+                            placeholder = segment.placeholder,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
+
     var (data, setData) = remember { mutableStateOf(parseMarkdown(content)) }
 
     // 监听内容变化，重新解析AST树
@@ -478,8 +517,8 @@ private fun MarkdownNode(
                 modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // 这里可以使用Coil等图片加载库加载图片
-                ZoomableAsyncImage(
-                    model = imageUrl,
+                MarkdownRemoteImage(
+                    src = imageUrl,
                     contentDescription = altText,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))

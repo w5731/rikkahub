@@ -10,9 +10,23 @@ import { join, dirname } from "node:path";
 const SOURCE_DIR = "./build/client";
 const TARGET_DIR = "../web/src/main/resources/static";
 
+function mkdirRecursiveSafe(dir: string) {
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e: unknown) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "EEXIST") {
+      const st = statSync(dir);
+      if (!st.isDirectory()) throw e;
+      return;
+    }
+    throw e;
+  }
+}
+
 function copyDirectory(src: string, dest: string) {
   // 确保目标目录存在
-  mkdirSync(dest, { recursive: true });
+  mkdirRecursiveSafe(dest);
 
   const entries = readdirSync(src, { withFileTypes: true });
 
@@ -24,7 +38,7 @@ function copyDirectory(src: string, dest: string) {
       copyDirectory(srcPath, destPath);
     } else {
       // 确保父目录存在
-      mkdirSync(dirname(destPath), { recursive: true });
+      mkdirRecursiveSafe(dirname(destPath));
       copyFileSync(srcPath, destPath);
     }
   }

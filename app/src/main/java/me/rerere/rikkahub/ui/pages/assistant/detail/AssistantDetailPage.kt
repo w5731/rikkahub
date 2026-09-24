@@ -5,6 +5,7 @@ import me.rerere.hugeicons.stroke.BookOpen01
 import me.rerere.hugeicons.stroke.Brain02
 import me.rerere.hugeicons.stroke.ArrowRight01
 import me.rerere.hugeicons.stroke.Code
+import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.Message02
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Puzzle
@@ -140,6 +141,13 @@ fun AssistantDetailPage(id: String) {
                         leadingContent = { Icon(HugeIcons.BookOpen01, null) },
                         supportingContent = { Text(stringResource(R.string.assistant_detail_local_tools_desc)) },
                         headlineContent = { Text(stringResource(R.string.assistant_page_tab_local_tools)) },
+                        trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.AssistantAuroraDraw(id)) },
+                        leadingContent = { Icon(HugeIcons.MagicWand01, null) },
+                        supportingContent = { Text("回复中自动插入 AI 生成图片（艾罗拉）") },
+                        headlineContent = { Text("AI 绘图") },
                         trailingContent = { Icon(HugeIcons.ArrowRight01, null) },
                     )
                 }

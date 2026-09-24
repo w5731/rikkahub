@@ -42,6 +42,8 @@ data class Assistant(
     val lorebookIds: Set<Uuid> = emptySet(),            // 关联的 Lorebook ID
     val enabledSkills: Set<String> = emptySet(),        // 启用的 skill 名称列表
     val enableTimeReminder: Boolean = false,            // 时间间隔提醒注入
+    val enableAuroraDraw: Boolean = false,              // 艾罗拉绘图：回复中输出 [[aurora_draw ...]] 占位符
+    val auroraDrawPresetId: String? = null,             // 画师预设覆盖（null = 全局默认预设）
 )
 
 @Serializable

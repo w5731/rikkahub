@@ -40,6 +40,19 @@ interface MessageNodeDAO {
     @Query("DELETE FROM message_node WHERE id = :nodeId")
     suspend fun deleteById(nodeId: String)
 
+    /** 含艾罗拉绘图占位符的会话 id（LIKE 粗筛，供一次性迁移定位，避免全量加载会话）。 */
+    @Query("SELECT DISTINCT conversation_id FROM message_node WHERE messages LIKE '%[[aurora_draw%'")
+    suspend fun getConversationIdsContainingAuroraPlaceholders(): List<String>
+
+    @Query(
+        "SELECT id, messages FROM message_node WHERE conversation_id = :conversationId " +
+            "AND messages LIKE '%[[aurora_draw%'"
+    )
+    suspend fun getAuroraMessageNodePayloads(conversationId: String): List<AuroraMessageNodePayload>
+
+    @Query("UPDATE message_node SET messages = :replacement WHERE id = :nodeId AND messages = :expected")
+    suspend fun compareAndSetMessages(nodeId: String, expected: String, replacement: String): Int
+
     // 使用 @RawQuery 绕过 Room 编译期校验，以便使用 json_each() 虚拟表
     @RawQuery
     suspend fun getTokenStatsRaw(query: SupportSQLiteQuery): MessageTokenStats
@@ -47,6 +60,11 @@ interface MessageNodeDAO {
     @RawQuery
     suspend fun getMessageCountPerDayRaw(query: SupportSQLiteQuery): List<MessageDayCount>
 }
+
+data class AuroraMessageNodePayload(
+    val id: String,
+    val messages: String,
+)
 
 data class MessageTokenStats(
     val totalMessages: Int = 0,

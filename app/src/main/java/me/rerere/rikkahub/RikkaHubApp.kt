@@ -27,6 +27,7 @@ import me.rerere.rikkahub.di.appModule
 import me.rerere.rikkahub.di.dataSourceModule
 import me.rerere.rikkahub.di.repositoryModule
 import me.rerere.rikkahub.di.viewModelModule
+import me.rerere.rikkahub.data.aurora.AuroraLegacyMigration
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.service.WebServerService
@@ -66,6 +67,9 @@ class RikkaHubApp : Application() {
 
         // sync upload files to DB
         syncManagedFiles()
+
+        // one-time migration: re-key legacy aurora images to seed-based identity
+        migrateAuroraPlaceholders()
 
         // Init remote config
         get<FirebaseRemoteConfig>().apply {
@@ -113,6 +117,16 @@ class RikkaHubApp : Application() {
                 get<FilesManager>().syncFolder()
             }.onFailure {
                 Log.e(TAG, "syncManagedFiles failed", it)
+            }
+        }
+    }
+
+    private fun migrateAuroraPlaceholders() {
+        get<AppScope>().launch(Dispatchers.IO) {
+            runCatching {
+                get<AuroraLegacyMigration>().run()
+            }.onFailure {
+                Log.e(TAG, "migrateAuroraPlaceholders failed", it)
             }
         }
     }

@@ -90,18 +90,46 @@ private val INLINE_LATEX_REGEX = Regex("\\\\\\((.+?)\\\\\\)")
 private val BLOCK_LATEX_REGEX = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MATCHES_ALL)
 private val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
 
-private fun preProcess(content: String): String {
-    val codeBlocks = mutableListOf<IntRange>()
-    CODE_BLOCK_REGEX.findAll(content).forEach { codeBlocks.add(it.range) }
-    fun isInCodeBlock(pos: Int) = codeBlocks.any { pos in it }
+private fun keepUserLineBreaks(text: String): String {
+    val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    return buildString {
+        lines.forEachIndexed { index, line ->
+            append(line)
+            if (index < lines.lastIndex) {
+                val next = lines[index + 1]
+                if (line.isNotBlank() && next.isNotBlank() && !line.endsWith("  ") && !line.endsWith("\\")) {
+                    append("  ")
+                }
+                append('\n')
+            }
+        }
+    }
+}
 
-    var result = INLINE_LATEX_REGEX.replace(content) { m ->
-        if (isInCodeBlock(m.range.first)) m.value else "$" + m.groupValues[1] + "$"
+private fun preProcess(content: String): String {
+    return buildString {
+        var last = 0
+        CODE_BLOCK_REGEX.findAll(content).forEach { code ->
+            if (last < code.range.first) {
+                append(preProcessNonCode(content.substring(last, code.range.first)))
+            }
+            append(code.value)
+            last = code.range.last + 1
+        }
+        if (last < content.length) {
+            append(preProcessNonCode(content.substring(last)))
+        }
     }
-    result = BLOCK_LATEX_REGEX.replace(result) { m ->
-        if (isInCodeBlock(m.range.first)) m.value else "$$" + m.groupValues[1] + "$$"
+}
+
+private fun preProcessNonCode(text: String): String {
+    var result = INLINE_LATEX_REGEX.replace(text) { matchResult ->
+        "$" + matchResult.groupValues[1] + "$"
     }
-    return result
+    result = BLOCK_LATEX_REGEX.replace(result) { matchResult ->
+        "$$" + matchResult.groupValues[1] + "$$"
+    }
+    return keepUserLineBreaks(result)
 }
 
 // ---- HTML generation ----
@@ -242,8 +270,8 @@ private fun HtmlBlockElement(
             val alt = element.attr("alt")
             if (src.isNotEmpty()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    ZoomableAsyncImage(
-                        model = src,
+                    MarkdownRemoteImage(
+                        src = src,
                         contentDescription = alt.takeIf { it.isNotEmpty() },
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -748,8 +776,8 @@ private fun HtmlInlineAsComposable(node: Node, onClickCitation: (String) -> Unit
                     val src = node.attr("src")
                     val alt = node.attr("alt")
                     if (src.isNotEmpty()) {
-                        ZoomableAsyncImage(
-                            model = src,
+                        MarkdownRemoteImage(
+                            src = src,
                             contentDescription = alt.takeIf { it.isNotEmpty() },
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))

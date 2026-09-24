@@ -49,9 +49,11 @@ import me.rerere.hugeicons.stroke.Clapping01
 import me.rerere.hugeicons.stroke.Database02
 import me.rerere.hugeicons.stroke.Developer
 import me.rerere.hugeicons.stroke.GlobalSearch
+import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.ImageUpload
 import me.rerere.hugeicons.stroke.InLove
 import me.rerere.hugeicons.stroke.LookTop
+import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Package
@@ -285,6 +287,26 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                             }
                         },
                         headlineContent = { Text(stringResource(R.string.setting_page_chat_storage)) },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingMarkdownImages) },
+                        leadingContent = { Icon(HugeIcons.Image02, null) },
+                        supportingContent = {
+                            Text(stringResource(R.string.setting_page_markdown_remote_images_desc))
+                        },
+                        headlineContent = {
+                            Text(stringResource(R.string.setting_page_markdown_remote_images))
+                        },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingAuroraImage) },
+                        leadingContent = { Icon(HugeIcons.MagicWand01, null) },
+                        supportingContent = {
+                            Text("AI 回复自动插图：Token、画师预设与生成参数")
+                        },
+                        headlineContent = {
+                            Text("艾罗拉绘图")
+                        },
                     )
                 }
             }

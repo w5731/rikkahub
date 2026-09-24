@@ -191,6 +191,20 @@ class WebDavSync(
                 } else {
                     Log.w(TAG, "prepareBackupFile: Skills folder does not exist or is not a directory")
                 }
+
+                val mdRemoteImagesFolder = File(context.filesDir, FileFolders.MD_REMOTE_IMAGES)
+                if (mdRemoteImagesFolder.exists() && mdRemoteImagesFolder.isDirectory) {
+                    Log.i(TAG, "prepareBackupFile: Backing up markdown remote images from ${mdRemoteImagesFolder.absolutePath}")
+                    mdRemoteImagesFolder.listFiles()?.forEach { file ->
+                        if (file.isFile) {
+                            addFileToZip(
+                                zipOut,
+                                file,
+                                "${FileFolders.MD_REMOTE_IMAGES}/${file.name}",
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -289,6 +303,28 @@ class WebDavSync(
                                         Log.e(TAG, "restoreFromBackupFile: Failed to restore file ${zipEntry.name}", e)
                                         throw Exception("Failed to restore file ${zipEntry.name}: ${e.message}")
                                     }
+                                }
+                            } else if (config.items.contains(WebDavConfig.BackupItem.FILES) &&
+                                zipEntry.name.startsWith("${FileFolders.MD_REMOTE_IMAGES}/")
+                            ) {
+                                val fileName = zipEntry.name.substringAfter("${FileFolders.MD_REMOTE_IMAGES}/")
+                                if (fileName.isNotEmpty()) {
+                                    val folder = File(context.filesDir, FileFolders.MD_REMOTE_IMAGES)
+                                    if (!folder.exists()) {
+                                        folder.mkdirs()
+                                    }
+                                    val targetFile = File(folder, fileName)
+                                    Log.i(
+                                        TAG,
+                                        "restoreFromBackupFile: Restoring markdown remote image ${zipEntry.name} to ${targetFile.absolutePath}"
+                                    )
+                                    FileOutputStream(targetFile).use { outputStream ->
+                                        zipIn.copyTo(outputStream)
+                                    }
+                                    Log.i(
+                                        TAG,
+                                        "restoreFromBackupFile: Restored ${zipEntry.name} (${targetFile.length()} bytes)"
+                                    )
                                 }
                             } else if (config.items.contains(WebDavConfig.BackupItem.FILES) &&
                                 zipEntry.name.startsWith("${FileFolders.SKILLS}/")

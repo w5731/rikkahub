@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
+import java.io.File
+
 val webUiDir = rootProject.layout.projectDirectory.dir("web-ui")
 val webStaticResourcesDir = layout.projectDirectory.dir("src/main/resources/static")
 
@@ -10,7 +12,14 @@ val buildWebUi = tasks.register<Exec>("buildWebUi") {
     description = "Build web-ui and copy its static output into the web module resources."
 
     workingDir = webUiDir.asFile
-    commandLine("bun", "run", "build")
+    val bunExe = when {
+        System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true) ->
+            System.getenv("APPDATA")?.let { File(it, "npm/bun.cmd").takeIf { f -> f.isFile }?.absolutePath }
+
+        else ->
+            System.getenv("HOME")?.let { File(it, ".bun/bin/bun").takeIf { f -> f.isFile }?.absolutePath }
+    } ?: "bun"
+    commandLine(bunExe, "run", "build")
 
     inputs.files(
         webUiDir.file("package.json"),

@@ -11,3 +11,10 @@ local.properties
 .cursor
 .history
 .kotlin
+# Local release signing (never commit)
+signing/*.keystore
+# Local tooling and build artifacts (never commit)
+node_modules/
+*.egg-info/
+.kilo/
+.zcode/
